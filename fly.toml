@@ -1,0 +1,26 @@
+# ── RSI botu — Fly.io yapılandırması ───────────────────────────────────────
+#
+# 'app' adı Fly genelinde benzersiz olmalı — ilk kurulumda değiştir (örn. "rsi-bot-musteri").
+#
+# primary_region mutlaka fra ya da ams: Binance Futures API ABD IP'lerini (iad, ord, sea…) 451 ile engeller.
+#
+# Bot arka plan worker'ı (REST + Telegram long polling) — HTTP servisi yok, bu yüzden [http_service] bloğu YOK.
+# O blok olursa Fly makineyi "trafik yok" diye uyutmaya çalışır.
+
+app = "rsi-bot"
+primary_region = "fra"
+
+[build]
+
+[env]
+  NODE_ENV = "production"
+  DATA_DIR = "/data"
+
+# Kalıcı disk — ayarlar (eşikler vb.) deploy/yeniden başlatma sonrası korunur
+[mounts]
+  source      = "rsi_data"
+  destination = "/data"
+
+[[vm]]
+  size   = "shared-cpu-1x"
+  memory = "256mb"
