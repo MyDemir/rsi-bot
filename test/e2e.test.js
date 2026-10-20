@@ -90,7 +90,7 @@ test('Uçtan uca: WebSocket, ayrı kartlar, funding, grafik, kopma/yedek, ayar p
     assert.deepEqual([c1, c2].map(c => c.caption.match(/#(\w+)/)[1]).sort(), ['HOT2USDT', 'HOTUSDT']);
     const hot = [c1, c2].find(c => c.caption.includes('#HOTUSDT')).caption;
     assert.match(hot, /<pre>RSI 4 saat +[\d.]+\nRSI 12 saat +[\d.]+\nRSI 24 saat +[\d.]+<\/pre>/, 'RSI alt alta');
-    assert.match(hot, /💸 Funding: \+%0\.0250 · \d\d:\d\d'de \(2 sa 1 dk sonra\)/);
+    assert.match(hot, /💸 Funding: \+%0\.0250 · \d\d:\d\d'(?:da|de|ta|te) \(2 sa 1 dk sonra\)/);
     assert.match(hot, /💲 Fiyat: <b>[\d.]+<\/b> · 24 sa \+%2\.0/);
     assert.ok(hits.some(h => h === '/fapi/v1/klines HOTUSDT 4h'), 'grafik için 4 saatlik mum (varsayılan)');
     tick(['HOTUSDT', 'HOT2USDT']);

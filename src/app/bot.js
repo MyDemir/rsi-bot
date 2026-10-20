@@ -84,14 +84,25 @@ function createApp({ cfg, binance, telegram, settings, logger = console, now = (
     const info = await binance.exchangeInfo();
     let list = cryptoPerpetuals(info, cfg.excludeBases);
     const min = S().minHacimM * 1e6;
-    if (min > 0) list = list.filter(sym => (tickers.get(sym)?.vol ?? 0) >= min);
+    if (min > 0 && tickers.size) list = list.filter(sym => (tickers.get(sym)?.vol ?? 0) >= min);
+    else if (min > 0) logger.warn('[EVREN] 24s hacim verisi yok — hacim süzgeci bu turda uygulanmadı');
     const want = new Set(list);
+    for (const x of failed) if (!want.has(x)) failed.delete(x);
     const removed = market.symbols().filter(x => !want.has(x));
     for (const x of removed) { market.remove(x); engine.forget(x); blocked.delete(x); }
     const added = list.filter(x => !market.has(x));
     if (added.length || removed.length) logger.log(`[EVREN] ${list.length} coin (+${added.length} / −${removed.length})`);
     await loadMany(added);
     return { list, added, removed };
+  }
+
+  /** Yüklenemeyen coinleri yeniden dene (geçici Binance hatası coini saatlerce kör bırakmasın) */
+  async function retryFailed() {
+    if (!failed.size || loading > 0) return;
+    const list = [...failed];
+    await loadMany(list);
+    const ok = list.filter(x => !failed.has(x));
+    if (ok.length) logger.log(`[YÜKLE] yeniden denendi: ${ok.length}/${list.length} coin yüklendi${failed.size ? ` · ${failed.size} hâlâ hatalı` : ''}`);
   }
 
   // ── Fiyat → RSI → kart ───────────────────────────────────────────────────
@@ -122,14 +133,31 @@ function createApp({ cfg, binance, telegram, settings, logger = console, now = (
     logger.log(`[KART] ${sym} ${dir === 'up' ? 'aşırı alım' : 'aşırı satım'} · ${c.keys.map(k => `${k} ${fmt.r1(rsis[k])}`).join(' · ')}`);
   }
 
-  /** Grafik: seçili dilimin mumları (1 REST isteği, 60 sn önbellek) → PNG. Gönderim anında çağrılır. */
+  /** Süre sınırlı söz: süre dolarsa hata (arkadaki istek sürer ama bekleyen beklemez) */
+  function withTimeout(p, ms, label) {
+    let h;
+    return Promise.race([p, new Promise((_, rej) => { h = setTimeout(() => rej(new Error(`${label}: ${ms / 1000} sn içinde yanıt yok`)), ms); })]).finally(() => clearTimeout(h));
+  }
+
+  /**
+   * Grafik: seçili dilimin mumları (1 REST isteği, 60 sn önbellek) → PNG. Gönderim anında çağrılır.
+   * Telegram kuyruğu bunu beklediği için istek tekrar denenmez ve süre sınırlıdır; alınamazsa eski önbellek,
+   * o da yoksa hata → kart grafiksiz gider.
+   */
   async function chartPng(sym, tf, title = '') {
     const key = `${sym}|${tf}`, t = now();
     let hit = chartCache.get(key);
     if (!hit || t - hit.at > cfg.chartCacheMs) {
-      hit = { at: t, candles: chart.toCandles(await binance.klines(sym, tf, 150)) };
-      chartCache.set(key, hit);
-      if (chartCache.size > 200) chartCache.delete(chartCache.keys().next().value);
+      try {
+        const rows = await withTimeout(binance.klines(sym, tf, 150, { retries: 0 }), cfg.chartTimeoutMs ?? 8_000, `grafik ${sym} ${tf}`);
+        hit = { at: t, candles: chart.toCandles(rows) };
+        chartCache.delete(key);
+        chartCache.set(key, hit);
+        if (chartCache.size > 200) chartCache.delete(chartCache.keys().next().value);
+      } catch (err) {
+        if (!hit) throw err;
+        logger.warn(`[GRAFİK] ${err.message} — önbellekteki mumlar kullanıldı`);
+      }
     }
     const s = S();
     const cs = hit.candles.slice();
@@ -311,6 +339,7 @@ function createApp({ cfg, binance, telegram, settings, logger = console, now = (
     stream.start();
     every(cfg.priceEveryMs, fallbackTick, 'YEDEK');
     every(2_000, resyncTick, 'KESİNLEŞTİR');
+    every(cfg.retryFailedEveryMs ?? 3 * 60_000, retryFailed, 'YÜKLE');
     every(20_000, listTick, 'LİSTE');
     every(cfg.tickersEveryMs, refreshTickers, '24S');
     every(cfg.reconcileEveryMs, async () => { if (!fallback) await restPrices(); await refreshFunding(); }, 'KARŞILAŞTIR');
@@ -328,8 +357,8 @@ function createApp({ cfg, binance, telegram, settings, logger = console, now = (
   }
 
   return {
-    start, stop, onData, onGap, restPrices, fallbackTick, listTick, resyncTick, refreshUniverse, lists, listText, coinReply, statusText, chartPng,
-    market, engine, stats, blocked, funding, _resync: resync, get stream() { return stream; },
+    start, stop, onData, onGap, restPrices, fallbackTick, listTick, resyncTick, refreshUniverse, retryFailed, lists, listText, coinReply, statusText, chartPng,
+    market, engine, stats, blocked, funding, failed, _resync: resync, get stream() { return stream; },
   };
 }
 

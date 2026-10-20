@@ -10,6 +10,10 @@
 app = "rsi-bot"
 primary_region = "fra"
 
+# Kapanışta Telegram kuyruğu boşaltılır (en fazla 5 sn); Fly varsayılanı 5 sn olduğu için pay bırakıldı
+kill_signal  = "SIGINT"
+kill_timeout = 15
+
 [build]
 
 [env]

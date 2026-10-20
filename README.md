@@ -22,7 +22,7 @@ RSI 4 saat    84.2
 RSI 12 saat   82.1
 RSI 24 saat   80.5
 💲 Fiyat: 67123.4 · 24 sa +%5.2
-💸 Funding: +%0.0100 · 19:00'de (2 sa 15 dk sonra)
+💸 Funding: +%0.0100 · 19:00'da (2 sa 15 dk sonra)
 ⏱ 20.10 16:45 · şart: 4s · 12s · 24s RSI ≥ 80
 ```
 
@@ -121,6 +121,7 @@ fly launch --no-deploy --copy-config          # uygulamayı oluştur (fra bölge
 fly volumes create rsi_data --region fra --size 1
 fly secrets set TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=-100...
 fly deploy
+fly scale count 1                             # tek kopya: iki kopya aynı kartı iki kez gönderir
 fly logs                                      # "[WS] Bağlandı" ve "[BOT] RSI botu çalışıyor"
 ```
 
@@ -184,7 +185,7 @@ Tek mesaj, yerinde güncellenir:
 ## Geliştirme
 
 ```bash
-npm install --no-package-lock
+npm ci                    # Node 22+; sürümler package-lock.json'dan
 cp .env.example .env      # token ve grup ID'sini yaz
 npm start
 npm test                  # ağ gerekmez: sahte Binance REST + WebSocket ve Telegram

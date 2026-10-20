@@ -29,6 +29,8 @@ module.exports = {
   priceEveryMs:    15_000,      // yedek REST fiyat aralığı (yalnız WebSocket sessizken)
   reconcileEveryMs: 5 * 60_000, // WebSocket açıkken de REST ile fiyat/funding karşılaştırması (kaçan güncelleme kalmasın)
   chartCacheMs:    60_000,      // aynı coin + dilim grafiği için mum önbelleği
+  chartTimeoutMs:  8_000,       // grafik mumları bu sürede gelmezse kart grafiksiz gider (Telegram kuyruğu beklemez)
+  retryFailedEveryMs: 3 * 60_000, // açılışta / evren yenilemesinde yüklenemeyen coinler bu aralıkla yeniden denenir
   tickersEveryMs:  5 * 60_000,  // 24s hacim / değişim
   universeEveryMs: 6 * H,       // yeni listelenen / kaldırılan kontratlar
   resyncDelayMs:   30_000,      // mum kapanışından sonra kesin kapanış için REST'ten yeniden yükle

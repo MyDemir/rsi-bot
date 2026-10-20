@@ -11,7 +11,7 @@ RSI 4 saat    84.2
 RSI 12 saat   82.1
 RSI 24 saat   80.5
 💲 Fiyat: 1.2345 · 24 sa +%12.4
-💸 Funding: +%0.0100 · 19:00'de (2 sa 15 dk sonra)
+💸 Funding: +%0.0100 · 19:00'da (2 sa 15 dk sonra)
 ⏱ 20.10 16:45 · şart: 4s · 12s · 24s RSI ≥ 80
 ```
 
@@ -39,6 +39,7 @@ Aynı anda birden fazla coin şarta girerse her biri **kendi kartıyla** gelir.
 Panel aynı mesajda güncellenir. Değişiklik **anında** geçerli olur ve bot yeniden başlasa da korunur.
 Şart değişince bot, yeni ayarla şu an şartı sağlayanları bir kez listeler (bunlar için ayrıca kart gelmez;
 şarta yeni girenler için gelir). Herkes paneli görebilir; değiştirmek yalnız grup yöneticilerine açık.
+Grupta "anonim yönetici" olarak yazan yöneticiyi bot tanıyamaz; ayar değiştirirken anonim modu kapatın.
 
 Komutla da olur: `/ayar ustEsik 85` · `/ayar altEsik 15` · `/ayar tf1d kapat` · `/ayar grafik kapat` ·
 `/ayar grafikTf 1w` · `/ayar listeDk 240` · `/ayar sifirla`

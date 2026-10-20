@@ -5,7 +5,7 @@
  * Hız sınırlayıcı ve tekrar deneme mantığı scalp-bot altyapısından (binanceClient.js) alınmıştır:
  *   • Tüm istekler sıraya girer, her biri weight'i kadar süre tüketir (IP başına 2400 weight/dk sınırı)
  *   • 429 / -1003 / Retry-After → bekleyip tekrar; ağ ve 5xx hataları → 2/4/8 sn ile tekrar
- *   • 418 (IP yasağı) ve diğer 4xx tekrar DENENMEZ
+ *   • 418 (IP yasağı) Retry-After taşıyorsa yasak süresi kadar beklenir; başlıksız 418 ve diğer 4xx'ler tekrar DENENMEZ
  * Kullanılan uç noktaların hepsi herkese açık; BINANCE_API_KEY tanımlıysa başlıkta gönderilir.
  */
 
@@ -66,10 +66,11 @@ function createBinance({ base, apiKey = '', weightPerMin = 1800, logger = consol
           continue;
         }
         stats.errors++;
-        if (!rateLimited || attempt >= maxRetries) throw err;
+        if (!rateLimited) throw err;
         const waitSec = err.retryAfter > 0 ? err.retryAfter : 60;
+        nextSlotAt = Math.max(nextSlotAt, Date.now() + waitSec * 1000);   // diğer istekler de beklesin (tekrar denenmese de)
+        if (attempt >= maxRetries) throw err;
         logger.warn(`[BINANCE] ${label}: hız sınırı — ${waitSec} sn bekleniyor (${attempt + 1}/${maxRetries})`);
-        nextSlotAt = Math.max(nextSlotAt, Date.now() + waitSec * 1000);   // diğer istekler de beklesin
         await sleep(waitSec * 1000);
       }
     }
@@ -95,14 +96,17 @@ function createBinance({ base, apiKey = '', weightPerMin = 1800, logger = consol
     return res.json();
   }
 
-  const call = (weight, label, path, params) => withRetry(() => limited(weight, () => get(path, params)), label);
+  const call = (weight, label, path, params, retries = 3) => withRetry(() => limited(weight, () => get(path, params)), label, retries);
 
   return {
     stats,
     backlogMs: () => Math.max(0, nextSlotAt - Date.now()),
     exchangeInfo: () => call(1, 'exchangeInfo', '/fapi/v1/exchangeInfo'),
-    /** @returns ham satırlar [[openTime, o, h, l, c, v, closeTime, ...]] */
-    klines: (symbol, interval, limit) => call(klineWeight(limit), `klines ${symbol} ${interval}`, '/fapi/v1/klines', { symbol, interval, limit }),
+    /**
+     * @param {{retries?:number}} [o]  retries 0: hata / hız sınırında beklemeden fırlat (grafik gibi beklemeye değmeyen istekler)
+     * @returns ham satırlar [[openTime, o, h, l, c, v, closeTime, ...]]
+     */
+    klines: (symbol, interval, limit, { retries = 3 } = {}) => call(klineWeight(limit), `klines ${symbol} ${interval}`, '/fapi/v1/klines', { symbol, interval, limit }, retries),
     /** @returns Map<symbol, price> — tüm semboller tek istekte */
     async prices() {
       const rows = await call(2, 'ticker/price', '/fapi/v2/ticker/price');
