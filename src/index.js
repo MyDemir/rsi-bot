@@ -14,6 +14,7 @@ const { createTelegram } = require('./telegram/client');
 const { installCommands, COMMANDS } = require('./telegram/commands');
 const { createSettings } = require('./settings/store');
 const { createApp } = require('./app/bot');
+const { createHub } = require('./app/hub');
 
 async function main() {
   const settings = createSettings({ file: path.join(cfg.dataDir, 'settings.json') });
@@ -33,10 +34,16 @@ async function main() {
   await app.start();
   console.log('[BOT] RSI botu çalışıyor');
 
+  const hub = createHub({
+    url: cfg.hubUrl, key: cfg.hubKey, id: cfg.hubBotId, name: cfg.hubBotName, intervalMs: cfg.hubEveryMs,
+    report: () => ({ ...app.healthReport(), telegram: telegram.username() ? `@${telegram.username()}` : null }),
+  });
+  hub?.start();
+
   const shutdown = async sig => {
     console.log(`[BOT] ${sig} alındı, kapatılıyor…`);
     app.stop(); telegram.stop();
-    await telegram.flush(5_000);
+    await Promise.all([telegram.flush(5_000), hub?.stop()]);
     process.exit(0);
   };
   process.on('SIGINT', () => shutdown('SIGINT'));

@@ -137,8 +137,24 @@ Güncelleme: `git pull && fly deploy`. Ayarlar diskte (`/data/settings.json`) ol
 | `BINANCE_WS_URL` | isteğe bağlı | WebSocket adresi (varsayılan `wss://fstream.binance.com/market/stream`) |
 | `DATA_DIR` | isteğe bağlı | ayar dosyası klasörü (Fly'da `/data`) |
 | `DISPLAY_TZ` | isteğe bağlı | saat dilimi (varsayılan `Europe/Istanbul`) |
+| `HUB_URL` · `HUB_KEY` | isteğe bağlı | izleme paneline nabız (aşağıda); ikisi de tanımlı değilse hiçbir şey gönderilmez |
+| `HUB_BOT_ID` · `HUB_BOT_NAME` | isteğe bağlı | panelde botun kimliği ve adı (varsayılan `rsi-bot` · `RSI Botu`) |
 
 **Bölge:** `fra` ya da `ams` olmalı — Binance Futures ABD IP'lerini engeller. Makine 512 MB (bot ≈ 120 MB + grafik payı).
+
+## İzleme paneli (isteğe bağlı)
+
+Bot, scalp-bot panelinin harici bot ucuna (`/api/external-bots/heartbeat`) 60 sn'de bir nabız gönderebilir.
+Panelde durum, son kart ve metrikler görünür: izlenen / hazır coin, veri kaynağı, son fiyatın yaşı, kopukluk,
+bugünkü kart, şart, Telegram kuyruğu, Binance ağırlığı, bellek, çalışma süresi.
+
+```bash
+fly secrets set HUB_URL=https://<panel>/api/external-bots/heartbeat HUB_KEY=<paneldeki EXTERNAL_BOT_KEY> HUB_BOT_ID=musteri-rsi
+```
+
+- Fiyat 2 dk'dan uzun gelmezse ya da hiçbir coin yüklenemezse durum **hata** olur; açıklama yalnız sorun ilk görüldüğünde gönderilir.
+- Kapanışta **çevrimdışı** bildirilir. Panel 120 sn nabız almazsa botu çevrimdışı gösterir.
+- Panel erişilemezse bot etkilenmez (bir kez uyarı log'lanır). Anahtar log'a yazılmaz; anahtarla yalnız nabız gönderilir, panel okunamaz.
 
 ## Telegram
 

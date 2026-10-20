@@ -34,7 +34,7 @@ function createApp({ cfg, binance, telegram, settings, logger = console, now = (
   let funding = new Map();                  // sym → { rate, next, mark }
   let lastListSlot = null, stopped = false, loading = 0, fallback = false, stream = null, volumeFilterSkipped = false;
   const timers = [];
-  const stats = { startedAt: now(), lastPriceAt: 0, lastWsAt: 0, cards: 0, cardsDay: null, cardsToday: 0, gaps: 0, priceErrors: 0, wsUpdates: 0 };
+  const stats = { startedAt: now(), lastPriceAt: 0, lastWsAt: 0, cards: 0, cardsDay: null, cardsToday: 0, lastCard: null, gaps: 0, priceErrors: 0, wsUpdates: 0 };
 
   const S = () => settings.get();
   const keys = () => activeTfs(cfg.tfs, S());
@@ -134,6 +134,7 @@ function createApp({ cfg, binance, telegram, settings, logger = console, now = (
     const tf = c.s.grafikTf;
     const photo = c.s.grafik ? () => chartPng(sym, tf, `RSI ${fmt.DIR[dir].name.toLowerCase()}`) : null;
     telegram.send(text, { kind: 'card', silent: !c.s.sesli, photo });
+    stats.lastCard = `${sym} ${fmt.DIR[dir].name.toLowerCase()} · ${c.keys.map(k => `${cfg.tfs.find(t => t.key === k).label} ${fmt.r1(rsis[k])}`).join(' · ')} · ${fmt.timeText(c.now, c.tz)}`;
     logger.log(`[KART] ${sym} ${dir === 'up' ? 'aşırı alım' : 'aşırı satım'} · ${c.keys.map(k => `${k} ${fmt.r1(rsis[k])}`).join(' · ')}`);
   }
 
@@ -298,6 +299,35 @@ function createApp({ cfg, binance, telegram, settings, logger = console, now = (
     ].join('\n');
   }
 
+  /** İzleme paneli için durum (src/app/hub.js). Veri 2 dk'dan uzun gelmiyorsa ya da hiç coin hazır değilse sorun. */
+  function healthReport() {
+    const t = now();
+    const silentSec = stats.lastPriceAt ? Math.round((t - stats.lastPriceAt) / 1000) : null;
+    const ready = readyCount(), total = market.symbols().length;
+    const problem = silentSec != null && silentSec > 120 ? `Fiyat verisi ${silentSec} sn'dir gelmiyor`
+      : total > 0 && ready === 0 && loading === 0 ? 'Hiçbir coin yüklenemedi'
+        : null;
+    const up = Math.round((t - stats.startedAt) / 60_000);
+    const s = S();
+    return {
+      status: problem ? 'error' : loading > 0 && ready === 0 ? 'starting' : 'online',
+      problem,
+      lastSignal: stats.lastCard,
+      metrics: {
+        'İzlenen coin': `${ready}/${total} hazır${failed.size ? ` · ${failed.size} hatalı` : ''}`,
+        'Veri': fallback ? 'REST yedeği (WebSocket sessiz)' : stats.lastWsAt ? 'WebSocket' : 'bağlanıyor',
+        'Son fiyat': silentSec == null ? '—' : `${silentSec} sn önce`,
+        'Kopukluk': String(stats.gaps),
+        'Bugünkü kart': String(stats.cardsDay === new Date(t).toISOString().slice(0, 10) ? stats.cardsToday : 0),
+        'Şart': `RSI ≥ ${s.ustEsik} / ≤ ${s.altEsik} · ${keys().map(k => cfg.tfs.find(x => x.key === k).label).join(' ')}`,
+        'Telegram kuyruğu': String(telegram.queueLength()),
+        'Binance ağırlık': `${binance.stats.usedWeight}/2400`,
+        'Bellek': `${Math.round(process.memoryUsage().rss / 1048576)} MB`,
+        'Çalışma': `${Math.floor(up / 60)} sa ${up % 60} dk`,
+      },
+    };
+  }
+
   // ── Ayar değişince ───────────────────────────────────────────────────────
   let changeTimer = null, changed = new Set();
   settings.onChange(key => {
@@ -361,7 +391,7 @@ function createApp({ cfg, binance, telegram, settings, logger = console, now = (
   }
 
   return {
-    start, stop, onData, onGap, restPrices, fallbackTick, listTick, resyncTick, refreshUniverse, refreshTickers, retryFailed, lists, listText, coinReply, statusText, chartPng,
+    start, stop, onData, onGap, restPrices, fallbackTick, listTick, resyncTick, refreshUniverse, refreshTickers, retryFailed, healthReport, lists, listText, coinReply, statusText, chartPng,
     market, engine, stats, blocked, funding, failed, _resync: resync, get stream() { return stream; },
   };
 }

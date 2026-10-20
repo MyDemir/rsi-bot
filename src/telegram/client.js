@@ -321,7 +321,7 @@ function createTelegram({ apiBase = 'https://api.telegram.org', token, chatId, t
   return {
     start, stop: () => { polling = false; }, send, flush, editMessage, deleteMessage, isAdmin, publishCommands,
     setCommands: t => { commands = { ...t }; }, onCallback: fn => { callbackHandler = fn; },
-    queueLength: () => queue.length, stats,
+    queueLength: () => queue.length, stats, username: () => botUsername,
     _internal: { handleUpdate, queue },
   };
 }

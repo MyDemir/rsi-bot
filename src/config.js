@@ -15,6 +15,13 @@ module.exports = {
   dataDir:      process.env.DATA_DIR || path.join(__dirname, '..', 'data'),
   tz:           process.env.DISPLAY_TZ || 'Europe/Istanbul',
 
+  // İzleme paneli (isteğe bağlı): scalp-bot paneli /api/external-bots/heartbeat — ikisi de tanımlıysa nabız gider
+  hubUrl:       process.env.HUB_URL || '',
+  hubKey:       process.env.HUB_KEY || '',                  // paneldeki EXTERNAL_BOT_KEY (en az 16 karakter)
+  hubBotId:     process.env.HUB_BOT_ID || 'rsi-bot',         // panelde botun kimliği (birden çok müşteri botu için farklı ver)
+  hubBotName:   process.env.HUB_BOT_NAME || 'RSI Botu',
+  hubEveryMs:   60_000,
+
   // Zaman dilimleri: RSI 4 saat · 12 saat · 24 saat (Binance 1d mumu, 03:00 TSİ açılır)
   tfs: [
     { key: '4h',  label: '4s',  long: '4 saat',  ms: 4 * H,  setting: 'tf4h' },

@@ -107,3 +107,18 @@ test('Saat eki okunuşa göre: 19:00\'da, 03:00\'te, 11:00\'de, 12:40\'ta', () =
   const cases = { '00:00': 'da', '03:00': 'te', '07:00': 'de', '11:00': 'de', '15:00': 'te', '16:00': 'da', '19:00': 'da', '20:00': 'de', '23:00': 'te', '12:40': 'ta', '19:30': 'da', '19:45': 'te', '08:50': 'de', '09:10': 'da' };
   for (const [hm, suf] of Object.entries(cases)) assert.equal(fmt.locSuffix(hm), suf, hm);
 });
+
+test('Panel durumu: veri akıyorsa online, fiyat 2 dk gelmezse sorun', async () => {
+  let t = Date.now();
+  const app = createApp({ cfg: baseCfg, binance: fakeBinance(), telegram, settings: createSettings({ persist: false }), logger: quiet, streamFactory, now: () => t });
+  try {
+    await app.start();
+    let h = app.healthReport();
+    assert.equal(h.status, 'online'); assert.equal(h.problem, null);
+    assert.equal(h.metrics['İzlenen coin'], '3/3 hazır');
+    assert.ok(Object.keys(h.metrics).length <= 20);
+    t += 5 * 60_000;
+    h = app.healthReport();
+    assert.equal(h.status, 'error'); assert.match(h.problem, /gelmiyor/);
+  } finally { app.stop(); }
+});
