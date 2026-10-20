@@ -15,6 +15,13 @@ module.exports = {
   dataDir:      process.env.DATA_DIR || path.join(__dirname, '..', 'data'),
   tz:           process.env.DISPLAY_TZ || 'Europe/Istanbul',
 
+  // İzleme paneli (isteğe bağlı): scalp-bot paneli /api/external-bots/heartbeat — ikisi de tanımlıysa nabız gider
+  hubUrl:       process.env.HUB_URL || '',
+  hubKey:       process.env.HUB_KEY || '',                  // paneldeki EXTERNAL_BOT_KEY (en az 16 karakter)
+  hubBotId:     process.env.HUB_BOT_ID || 'rsi-bot',         // panelde botun kimliği (birden çok müşteri botu için farklı ver)
+  hubBotName:   process.env.HUB_BOT_NAME || 'RSI Botu',
+  hubEveryMs:   60_000,
+
   // Zaman dilimleri: RSI 4 saat · 12 saat · 24 saat (Binance 1d mumu, 03:00 TSİ açılır)
   tfs: [
     { key: '4h',  label: '4s',  long: '4 saat',  ms: 4 * H,  setting: 'tf4h' },
@@ -29,6 +36,8 @@ module.exports = {
   priceEveryMs:    15_000,      // yedek REST fiyat aralığı (yalnız WebSocket sessizken)
   reconcileEveryMs: 5 * 60_000, // WebSocket açıkken de REST ile fiyat/funding karşılaştırması (kaçan güncelleme kalmasın)
   chartCacheMs:    60_000,      // aynı coin + dilim grafiği için mum önbelleği
+  chartTimeoutMs:  8_000,       // grafik mumları bu sürede gelmezse kart grafiksiz gider (Telegram kuyruğu beklemez)
+  retryFailedEveryMs: 3 * 60_000, // açılışta / evren yenilemesinde yüklenemeyen coinler bu aralıkla yeniden denenir
   tickersEveryMs:  5 * 60_000,  // 24s hacim / değişim
   universeEveryMs: 6 * H,       // yeni listelenen / kaldırılan kontratlar
   resyncDelayMs:   30_000,      // mum kapanışından sonra kesin kapanış için REST'ten yeniden yükle

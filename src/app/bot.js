@@ -32,9 +32,9 @@ function createApp({ cfg, binance, telegram, settings, logger = console, now = (
   const chartCache = new Map();             // "SYM|tf" → { at, candles }
   let tickers = new Map();                  // sym → { vol, chg }
   let funding = new Map();                  // sym → { rate, next, mark }
-  let lastListSlot = null, stopped = false, loading = 0, fallback = false, stream = null;
+  let lastListSlot = null, stopped = false, loading = 0, fallback = false, stream = null, volumeFilterSkipped = false;
   const timers = [];
-  const stats = { startedAt: now(), lastPriceAt: 0, lastWsAt: 0, cards: 0, cardsDay: null, cardsToday: 0, gaps: 0, priceErrors: 0, wsUpdates: 0 };
+  const stats = { startedAt: now(), lastPriceAt: 0, lastWsAt: 0, cards: 0, cardsDay: null, cardsToday: 0, lastCard: null, gaps: 0, priceErrors: 0, wsUpdates: 0 };
 
   const S = () => settings.get();
   const keys = () => activeTfs(cfg.tfs, S());
@@ -70,7 +70,10 @@ function createApp({ cfg, binance, telegram, settings, logger = console, now = (
     try {
       const m = await binance.tickers24h();
       for (const [k, v] of m) tickers.set(k, v);
-    } catch (err) { logger.warn(`[24S] alınamadı: ${err.message}`); }
+    } catch (err) { logger.warn(`[24S] alınamadı: ${err.message}`); return; }
+    if (volumeFilterSkipped && !stopped) {           // hacim verisi geldi → atlanan süzgeci şimdi uygula
+      await refreshUniverse().catch(err => logger.error(`[EVREN] ${err.message}`));
+    }
   }
 
   async function refreshFunding() {
@@ -84,14 +87,26 @@ function createApp({ cfg, binance, telegram, settings, logger = console, now = (
     const info = await binance.exchangeInfo();
     let list = cryptoPerpetuals(info, cfg.excludeBases);
     const min = S().minHacimM * 1e6;
-    if (min > 0) list = list.filter(sym => (tickers.get(sym)?.vol ?? 0) >= min);
+    volumeFilterSkipped = min > 0 && !tickers.size;
+    if (volumeFilterSkipped) logger.warn('[EVREN] 24s hacim verisi yok — hacim süzgeci veri gelince uygulanacak');
+    else if (min > 0) list = list.filter(sym => (tickers.get(sym)?.vol ?? 0) >= min);
     const want = new Set(list);
+    for (const x of failed) if (!want.has(x)) failed.delete(x);
     const removed = market.symbols().filter(x => !want.has(x));
     for (const x of removed) { market.remove(x); engine.forget(x); blocked.delete(x); }
     const added = list.filter(x => !market.has(x));
     if (added.length || removed.length) logger.log(`[EVREN] ${list.length} coin (+${added.length} / −${removed.length})`);
     await loadMany(added);
     return { list, added, removed };
+  }
+
+  /** Yüklenemeyen coinleri yeniden dene (geçici Binance hatası coini saatlerce kör bırakmasın) */
+  async function retryFailed() {
+    if (!failed.size || loading > 0) return;
+    const list = [...failed];
+    await loadMany(list);
+    const ok = list.filter(x => !failed.has(x));
+    if (ok.length) logger.log(`[YÜKLE] yeniden denendi: ${ok.length}/${list.length} coin yüklendi${failed.size ? ` · ${failed.size} hâlâ hatalı` : ''}`);
   }
 
   // ── Fiyat → RSI → kart ───────────────────────────────────────────────────
@@ -119,17 +134,35 @@ function createApp({ cfg, binance, telegram, settings, logger = console, now = (
     const tf = c.s.grafikTf;
     const photo = c.s.grafik ? () => chartPng(sym, tf, `RSI ${fmt.DIR[dir].name.toLowerCase()}`) : null;
     telegram.send(text, { kind: 'card', silent: !c.s.sesli, photo });
+    stats.lastCard = `${sym} ${fmt.DIR[dir].name.toLowerCase()} · ${c.keys.map(k => `${cfg.tfs.find(t => t.key === k).label} ${fmt.r1(rsis[k])}`).join(' · ')} · ${fmt.timeText(c.now, c.tz)}`;
     logger.log(`[KART] ${sym} ${dir === 'up' ? 'aşırı alım' : 'aşırı satım'} · ${c.keys.map(k => `${k} ${fmt.r1(rsis[k])}`).join(' · ')}`);
   }
 
-  /** Grafik: seçili dilimin mumları (1 REST isteği, 60 sn önbellek) → PNG. Gönderim anında çağrılır. */
+  /** Süre sınırlı söz: süre dolarsa hata (arkadaki istek sürer ama bekleyen beklemez) */
+  function withTimeout(p, ms, label) {
+    let h;
+    return Promise.race([p, new Promise((_, rej) => { h = setTimeout(() => rej(new Error(`${label}: ${ms / 1000} sn içinde yanıt yok`)), ms); })]).finally(() => clearTimeout(h));
+  }
+
+  /**
+   * Grafik: seçili dilimin mumları (1 REST isteği, 60 sn önbellek) → PNG. Gönderim anında çağrılır.
+   * Telegram kuyruğu bunu beklediği için istek tekrar denenmez ve süre sınırlıdır; alınamazsa eski önbellek,
+   * o da yoksa hata → kart grafiksiz gider.
+   */
   async function chartPng(sym, tf, title = '') {
     const key = `${sym}|${tf}`, t = now();
     let hit = chartCache.get(key);
     if (!hit || t - hit.at > cfg.chartCacheMs) {
-      hit = { at: t, candles: chart.toCandles(await binance.klines(sym, tf, 150)) };
-      chartCache.set(key, hit);
-      if (chartCache.size > 200) chartCache.delete(chartCache.keys().next().value);
+      try {
+        const rows = await withTimeout(binance.klines(sym, tf, 150, { retries: 0 }), cfg.chartTimeoutMs ?? 8_000, `grafik ${sym} ${tf}`);
+        hit = { at: t, candles: chart.toCandles(rows) };
+        chartCache.delete(key);
+        chartCache.set(key, hit);
+        if (chartCache.size > 200) chartCache.delete(chartCache.keys().next().value);
+      } catch (err) {
+        if (!hit) throw err;
+        logger.warn(`[GRAFİK] ${err.message} — önbellekteki mumlar kullanıldı`);
+      }
     }
     const s = S();
     const cs = hit.candles.slice();
@@ -266,6 +299,35 @@ function createApp({ cfg, binance, telegram, settings, logger = console, now = (
     ].join('\n');
   }
 
+  /** İzleme paneli için durum (src/app/hub.js). Veri 2 dk'dan uzun gelmiyorsa ya da hiç coin hazır değilse sorun. */
+  function healthReport() {
+    const t = now();
+    const silentSec = stats.lastPriceAt ? Math.round((t - stats.lastPriceAt) / 1000) : null;
+    const ready = readyCount(), total = market.symbols().length;
+    const problem = silentSec != null && silentSec > 120 ? `Fiyat verisi ${silentSec} sn'dir gelmiyor`
+      : total > 0 && ready === 0 && loading === 0 ? 'Hiçbir coin yüklenemedi'
+        : null;
+    const up = Math.round((t - stats.startedAt) / 60_000);
+    const s = S();
+    return {
+      status: problem ? 'error' : loading > 0 && ready === 0 ? 'starting' : 'online',
+      problem,
+      lastSignal: stats.lastCard,
+      metrics: {
+        'İzlenen coin': `${ready}/${total} hazır${failed.size ? ` · ${failed.size} hatalı` : ''}`,
+        'Veri': fallback ? 'REST yedeği (WebSocket sessiz)' : stats.lastWsAt ? 'WebSocket' : 'bağlanıyor',
+        'Son fiyat': silentSec == null ? '—' : `${silentSec} sn önce`,
+        'Kopukluk': String(stats.gaps),
+        'Bugünkü kart': String(stats.cardsDay === new Date(t).toISOString().slice(0, 10) ? stats.cardsToday : 0),
+        'Şart': `RSI ≥ ${s.ustEsik} / ≤ ${s.altEsik} · ${keys().map(k => cfg.tfs.find(x => x.key === k).label).join(' ')}`,
+        'Telegram kuyruğu': String(telegram.queueLength()),
+        'Binance ağırlık': `${binance.stats.usedWeight}/2400`,
+        'Bellek': `${Math.round(process.memoryUsage().rss / 1048576)} MB`,
+        'Çalışma': `${Math.floor(up / 60)} sa ${up % 60} dk`,
+      },
+    };
+  }
+
   // ── Ayar değişince ───────────────────────────────────────────────────────
   let changeTimer = null, changed = new Set();
   settings.onChange(key => {
@@ -311,6 +373,7 @@ function createApp({ cfg, binance, telegram, settings, logger = console, now = (
     stream.start();
     every(cfg.priceEveryMs, fallbackTick, 'YEDEK');
     every(2_000, resyncTick, 'KESİNLEŞTİR');
+    every(cfg.retryFailedEveryMs ?? 3 * 60_000, retryFailed, 'YÜKLE');
     every(20_000, listTick, 'LİSTE');
     every(cfg.tickersEveryMs, refreshTickers, '24S');
     every(cfg.reconcileEveryMs, async () => { if (!fallback) await restPrices(); await refreshFunding(); }, 'KARŞILAŞTIR');
@@ -328,8 +391,8 @@ function createApp({ cfg, binance, telegram, settings, logger = console, now = (
   }
 
   return {
-    start, stop, onData, onGap, restPrices, fallbackTick, listTick, resyncTick, refreshUniverse, lists, listText, coinReply, statusText, chartPng,
-    market, engine, stats, blocked, funding, _resync: resync, get stream() { return stream; },
+    start, stop, onData, onGap, restPrices, fallbackTick, listTick, resyncTick, refreshUniverse, refreshTickers, retryFailed, healthReport, lists, listText, coinReply, statusText, chartPng,
+    market, engine, stats, blocked, funding, failed, _resync: resync, get stream() { return stream; },
   };
 }
 

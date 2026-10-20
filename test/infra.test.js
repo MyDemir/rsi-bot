@@ -93,7 +93,7 @@ test('Biçim: kart (RSI alt alta, fiyat, funding) ve liste', () => {
   const card = fmt.cardText('up', { sym: 'BTCUSDT', rsis: { '4h': 84.23, '12h': 82.1, '1d': 80.5 }, price: 67123.46, chg: 5.2, funding: { rate: 0.0001, next: Date.UTC(2026, 9, 15, 16) } }, o);
   assert.match(card, /^🔴 <b>#BTCUSDT<\/b> · RSI aşırı alım\n<pre>RSI 4 saat    84\.2\nRSI 12 saat   82\.1\nRSI 24 saat   80\.5<\/pre>\n/);
   assert.match(card, /💲 Fiyat: <b>67123\.5<\/b> · 24 sa \+%5\.2/);
-  assert.match(card, /💸 Funding: \+%0\.0100 · 19:00'de \(4 sa 55 dk sonra\)/, 'funding oranı + İstanbul saatiyle sonraki zaman');
+  assert.match(card, /💸 Funding: \+%0\.0100 · 19:00'da \(4 sa 55 dk sonra\)/, 'funding oranı + İstanbul saatiyle sonraki zaman');
   assert.match(card, /⏱ 15\.10 14:05 · şart: 4s · 12s · 24s RSI ≥ 80/);
   assert.equal(fmt.fundingText({ rate: -0.000375, next: null }, now, 'UTC'), '−%0.0375');
   assert.equal(fmt.fundingText(undefined, now, 'UTC'), '—');

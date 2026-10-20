@@ -1,11 +1,12 @@
 # ── RSI botu — Fly.io için Dockerfile ──────────────────────────────────────
 # Bağımlılıklar: ws (Binance WebSocket) ve @napi-rs/canvas (kart grafiği; hazır derlenmiş, derleyici gerekmez).
 # Yazı tipi repo içinde (src/assets/fonts) — imajda sistem fontu gerekmez.
-FROM node:20-slim
+FROM node:22-slim
 
 WORKDIR /app
+# package-lock.json zorunlu: her build aynı bağımlılık sürümlerini kurar
 COPY package*.json ./
-RUN if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev --no-audit --no-fund; fi
+RUN npm ci --omit=dev --no-audit --no-fund
 
 COPY src ./src
 

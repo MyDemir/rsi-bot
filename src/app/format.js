@@ -32,12 +32,27 @@ function durText(ms) {
   return `${Math.floor(m / 60)} sa${m % 60 ? ` ${m % 60} dk` : ''}`;
 }
 
-/** Funding: "+%0.0100 · 15:00'te (2 sa 15 dk)" */
+/**
+ * Saatten sonra gelen bulunma eki (-de/-da/-te/-ta): saat okunuşunun son kelimesine göre.
+ * "19:00" → on dokuz → 'da · "03:00" → üç → 'te · "12:40" → kırk → 'ta · "00:00" → sıfır → 'da
+ */
+const UNIT_SUFFIX = ['da', 'de', 'de', 'te', 'te', 'te', 'da', 'de', 'de', 'da'];    // sıfır bir iki üç dört beş altı yedi sekiz dokuz
+const TENS_SUFFIX = { 1: 'da', 2: 'de', 3: 'da', 4: 'ta', 5: 'de' };               // on yirmi otuz kırk elli
+function locSuffix(hm) {
+  const [h, m] = hm.split(':').map(Number);
+  const n = m ? m : h;
+  if (n === 0) return 'da';
+  return n % 10 ? UNIT_SUFFIX[n % 10] : TENS_SUFFIX[n / 10];
+}
+
+/** Funding: "+%0.0100 · 15:00'te (2 sa 15 dk sonra)" */
 function fundingText(f, now, tz) {
   if (!f || !Number.isFinite(f.rate)) return '—';
   const r = `${f.rate >= 0 ? '+' : '−'}%${Math.abs(f.rate * 100).toFixed(4)}`;
   const left = f.next ? durText(f.next - now) : null;
-  return left ? `${r} · ${hhmm(f.next, tz)}'de (${left} sonra)` : r;
+  if (!left) return r;
+  const at = hhmm(f.next, tz);
+  return `${r} · ${at}'${locSuffix(at)} (${left} sonra)`;
 }
 
 const DIR = {
@@ -110,4 +125,4 @@ function coinText({ sym, rsis, price, chg, funding, match }, { s, tfs, keys, now
   ].join('\n');
 }
 
-module.exports = { esc, px, r1, pct, timeText, durText, fundingText, cardText, listText, listSections, coinText, condText, rsiBlock, DIR };
+module.exports = { esc, locSuffix, px, r1, pct, timeText, durText, fundingText, cardText, listText, listSections, coinText, condText, rsiBlock, DIR };
