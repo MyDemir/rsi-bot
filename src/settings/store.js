@@ -7,11 +7,17 @@
 
 const fs = require('fs');
 const path = require('path');
-const { DEFS, DEF_BY_KEY, DEFAULTS } = require('./defs');
+const { DEFS, DEF_BY_KEY, DEFAULTS, TF_KEYS } = require('./defs');
 
 const TRUE = ['1', 'true', 'ac', 'aç', 'acik', 'açık', 'on', 'evet'];
 const FALSE = ['0', 'false', 'kapat', 'kapa', 'kapali', 'kapalı', 'off', 'hayir', 'hayır'];
-const TF_KEYS = DEFS.filter(d => d.group === 'tf' && /^tf/.test(d.key)).map(d => d.key);
+
+/** Dosyadan okunan değer hâlâ geçerli mi (sürüm değişince eski/bozuk değer varsayılanı ezmesin) */
+function valid(d, v) {
+  if (d.type === 'bool') return typeof v === 'boolean';
+  if (d.type === 'enum') return d.options.some(o => o.v === v);
+  return Number.isFinite(v) && v >= d.min && v <= d.max;
+}
 
 const round = (v, step) => {
   const dec = String(step).includes('.') ? String(step).split('.')[1].length : 0;
@@ -26,7 +32,7 @@ function createSettings({ file, persist = true, logger = console } = {}) {
     if (!persist || !file) return;
     try {
       const j = JSON.parse(fs.readFileSync(file, 'utf8'));
-      for (const [k, v] of Object.entries(j.values || {})) if (k in DEF_BY_KEY) values[k] = v;
+      for (const [k, v] of Object.entries(j.values || {})) if (k in DEF_BY_KEY && valid(DEF_BY_KEY[k], v)) values[k] = v;
       if (!TF_KEYS.some(k => values[k])) for (const k of TF_KEYS) values[k] = true;
     } catch (e) {
       if (e.code !== 'ENOENT') logger.warn(`[AYAR] ${file} okunamadı (${e.message}) — varsayılanlar kullanılıyor`);
@@ -51,7 +57,12 @@ function createSettings({ file, persist = true, logger = console } = {}) {
     const d = DEF_BY_KEY[key];
     if (!d) return { ok: false, error: `bilinmeyen ayar: ${key}` };
     let v;
-    if (d.type === 'bool') {
+    if (d.type === 'enum') {
+      v = String(raw).trim();
+      const o = d.options.find(x => x.v.toLowerCase() === v.toLowerCase() || x.label.toLowerCase() === v.toLowerCase());
+      if (!o) return { ok: false, error: `${key}: ${d.options.map(x => `${x.v} (${x.label})`).join(', ')}` };
+      v = o.v;
+    } else if (d.type === 'bool') {
       if (typeof raw === 'boolean') v = raw;
       else {
         const s = String(raw).trim().toLowerCase();
@@ -80,6 +91,7 @@ function createSettings({ file, persist = true, logger = console } = {}) {
     const d = DEF_BY_KEY[key];
     if (!d) return { ok: false, error: 'bilinmeyen ayar' };
     if (d.type === 'bool') return set(key, !values[key]);
+    if (d.type === 'enum') { const i = d.options.findIndex(o => o.v === values[key]); return set(key, d.options[(i + (dir >= 0 ? 1 : d.options.length - 1)) % d.options.length].v); }
     return set(key, Math.min(d.max, Math.max(d.min, round(values[key] + dir * d.step, d.step))));
   }
 

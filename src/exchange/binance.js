@@ -110,6 +110,16 @@ function createBinance({ base, apiKey = '', weightPerMin = 1800, logger = consol
       for (const r of rows) { const p = parseFloat(r.price); if (r.symbol && p > 0) m.set(r.symbol, p); }
       return m;
     },
+    /** @returns Map<symbol, {rate, next, mark}> — funding oranı ve sonraki funding zamanı (tek istek) */
+    async premium() {
+      const rows = await call(10, 'premiumIndex', '/fapi/v1/premiumIndex');
+      const m = new Map();
+      for (const r of rows) {
+        const rate = parseFloat(r.lastFundingRate);
+        if (r.symbol && Number.isFinite(rate)) m.set(r.symbol, { rate, next: Number(r.nextFundingTime) || null, mark: parseFloat(r.markPrice) || null });
+      }
+      return m;
+    },
     /** @returns Map<symbol, {vol, chg}> — 24s USDT hacmi ve % değişim */
     async tickers24h() {
       const rows = await call(40, 'ticker/24hr', '/fapi/v1/ticker/24hr');

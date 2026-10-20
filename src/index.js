@@ -22,7 +22,7 @@ async function main() {
   const binance = createBinance({ base: cfg.binanceBase, apiKey: cfg.binanceKey, weightPerMin: cfg.maxWeightPerMin });
   const telegram = createTelegram({
     apiBase: cfg.telegramBase, token: cfg.token, chatId: cfg.chatId, threadId: cfg.threadId || null,
-    adminIds: cfg.adminIds, minIntervalMs: cfg.telegramMinIntervalMs,
+    adminIds: cfg.adminIds, minIntervalMs: cfg.telegramMinIntervalMs, maxQueue: cfg.telegramMaxQueue, cardTtlMs: cfg.cardTtlMs,
   });
 
   const app = createApp({ cfg, binance, telegram, settings });

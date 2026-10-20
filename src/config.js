@@ -17,18 +17,25 @@ module.exports = {
 
   // Zaman dilimleri: RSI 4 saat · 12 saat · 24 saat (Binance 1d mumu, 03:00 TSİ açılır)
   tfs: [
-    { key: '4h',  label: '4s',  ms: 4 * H,  setting: 'tf4h' },
-    { key: '12h', label: '12s', ms: 12 * H, setting: 'tf12h' },
-    { key: '1d',  label: '1g',  ms: 24 * H, setting: 'tf1d' },
+    { key: '4h',  label: '4s',  long: '4 saat',  ms: 4 * H,  setting: 'tf4h' },
+    { key: '12h', label: '12s', long: '12 saat', ms: 12 * H, setting: 'tf12h' },
+    { key: '1d',  label: '24s', long: '24 saat', ms: 24 * H, setting: 'tf1d' },
   ],
 
-  priceEveryMs:    15_000,      // tüm fiyatlar tek istekle (ticker/price) — RSI anlık güncellenir
+  // Anlık veri WebSocket'ten (src/exchange/stream.js); REST yalnız açılış, mum kesinleştirme ve yedek
+  wsUrl:           process.env.BINANCE_WS_URL || 'wss://fstream.binance.com/market/stream',
+  wsStaleMs:       30_000,      // bu kadar mesaj yoksa bağlantı yenilenir
+  fallbackAfterMs: 20_000,      // WebSocket bu kadar sessizse fiyatlar REST'ten (yedek) alınır
+  priceEveryMs:    15_000,      // yedek REST fiyat aralığı (yalnız WebSocket sessizken)
+  reconcileEveryMs: 5 * 60_000, // WebSocket açıkken de REST ile fiyat/funding karşılaştırması (kaçan güncelleme kalmasın)
+  chartCacheMs:    60_000,      // aynı coin + dilim grafiği için mum önbelleği
   tickersEveryMs:  5 * 60_000,  // 24s hacim / değişim
   universeEveryMs: 6 * H,       // yeni listelenen / kaldırılan kontratlar
   resyncDelayMs:   30_000,      // mum kapanışından sonra kesin kapanış için REST'ten yeniden yükle
-  batchMs:         5_000,       // aynı anda gelen sinyaller tek mesajda birleşir
   maxWeightPerMin: 1800,        // Binance sınırı 2400 / dk — pay bırak
   telegramMinIntervalMs: 3100,  // grupta dakikada en fazla 20 mesaj
+  telegramMaxQueue: 300,        // bellek koruması
+  cardTtlMs:       20 * 60_000, // kuyrukta bundan uzun bekleyen kart gönderilmez (piyasa için bayat)
   settingsDebounceMs: 1500,     // menüde art arda dokunuşlar tek seferde uygulanır
   heartbeatMs:     5 * 60_000,  // fly logs'a durum satırı
 

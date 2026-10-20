@@ -4,7 +4,7 @@
 #
 # primary_region mutlaka fra ya da ams: Binance Futures API ABD IP'lerini (iad, ord, sea…) 451 ile engeller.
 #
-# Bot arka plan worker'ı (REST + Telegram long polling) — HTTP servisi yok, bu yüzden [http_service] bloğu YOK.
+# Bot arka plan worker'ı (Binance WebSocket + REST + Telegram long polling) — HTTP servisi yok, bu yüzden [http_service] bloğu YOK.
 # O blok olursa Fly makineyi "trafik yok" diye uyutmaya çalışır.
 
 app = "rsi-bot"
@@ -21,6 +21,7 @@ primary_region = "fra"
   source      = "rsi_data"
   destination = "/data"
 
+# Bot ~120 MB kullanır; grafik çizimi (canvas) için pay bırakıldı
 [[vm]]
   size   = "shared-cpu-1x"
-  memory = "256mb"
+  memory = "512mb"

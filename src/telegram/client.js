@@ -9,6 +9,9 @@
  *   • 429: Telegram'ın verdiği retry_after kadar bekleyip TEKRAR dener (sinyal kaybolmaz)
  *   • 4096 karakteri aşan mesaj satır sınırından bölünür
  *   • Konu silinmişse mesaj genel akışa düşer; 409 (aynı token'la ikinci kopya) açık uyarı
+ *   • Kuyruk sınırı (bellek), bayat kart atlanır (TTL), komut yanıtları kartların önüne geçer,
+ *     2 dk'dan uzun bekleyen karta "gecikmeli" satırı (scalp-bot telegram.js'ten)
+ *   • Fotoğraflı kart: grafik gönderim ANINDA çizilir (kuyrukta PNG birikmez); çizilemezse metin gider
  *   • Token hiçbir log satırına yazılmaz
  */
 
@@ -31,7 +34,16 @@ function splitText(text, max = MAX_LEN) {
   return out;
 }
 
-function createTelegram({ apiBase = 'https://api.telegram.org', token, chatId, threadId = null, adminIds = [], minIntervalMs = 3100, logger = console } = {}) {
+const CAPTION_MAX = 1024;
+const LATE_MS = 2 * 60_000;
+/** Görünen metin uzunluğu (etiketler hariç) — fotoğraf açıklaması sınırı için.
+ *  multipart gönderimde satır sonları \r\n olur → her satır sonu 2 karakter sayılır (scalp-bot'taki gibi). */
+const visibleLen = html => {
+  const t = html.replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  return t.length + (t.match(/\n/g) || []).length;
+};
+
+function createTelegram({ apiBase = 'https://api.telegram.org', token, chatId, threadId = null, adminIds = [], minIntervalMs = 3100, maxQueue = 300, cardTtlMs = 20 * 60_000, logger = console } = {}) {
   const CHAT = String(chatId ?? '');
 
   async function api(method, body, timeoutMs = 15_000) {
@@ -48,15 +60,60 @@ function createTelegram({ apiBase = 'https://api.telegram.org', token, chatId, t
     return data.result;
   }
 
+  /** sendPhoto (multipart, Node'un yerleşik FormData/Blob'u) */
+  async function apiPhoto(fields, png, timeoutMs = 30_000) {
+    const fd = new FormData();
+    for (const [k, v] of Object.entries(fields)) if (v != null) fd.append(k, typeof v === 'object' ? JSON.stringify(v) : String(v));
+    fd.append('photo', new Blob([png], { type: 'image/png' }), 'grafik.png');
+    let res;
+    try {
+      res = await fetch(`${apiBase}/bot${token}/sendPhoto`, { method: 'POST', body: fd, signal: AbortSignal.timeout(timeoutMs) });
+    } catch (err) {
+      throw new TelegramError(`ağ hatası (${err.name === 'TimeoutError' ? 'zaman aşımı' : err.cause?.code || err.message})`, 0);
+    }
+    const data = await res.json().catch(() => ({ ok: false, description: `HTTP ${res.status}` }));
+    if (!data.ok) throw new TelegramError(data.description || `HTTP ${res.status}`, data.error_code ?? res.status, data.parameters?.retry_after);
+    return data.result;
+  }
+
   // ── Gönderim kuyruğu ─────────────────────────────────────────────────────
   const queue = [];
   let pumping = false, lastSentAt = 0;
-  const stats = { sent: 0, failed: 0, retried429: 0 };
+  const stats = { sent: 0, failed: 0, retried429: 0, droppedOverflow: 0, droppedExpired: 0, photoFallback: 0, maxWaitMs: 0 };
 
+  function push(item) {
+    if (queue.length >= maxQueue) {                       // bellek koruması: önce en eski kart düşer
+      const i = queue.findIndex(q => q.kind !== 'reply');
+      if (i < 0 && item.kind !== 'reply') { stats.droppedOverflow++; logger.warn(`[TELEGRAM] kuyruk dolu (${maxQueue}) — yeni mesaj atlandı`); return; }
+      queue.splice(i < 0 ? 0 : i, 1); stats.droppedOverflow++;
+      logger.warn(`[TELEGRAM] kuyruk dolu (${maxQueue}) — en eski kart düşürüldü`);
+    }
+    if (item.kind === 'reply') {                          // komut yanıtları kartların önüne
+      let i = 0;
+      while (i < queue.length && queue[i].kind === 'reply') i++;
+      queue.splice(i, 0, item);
+    } else queue.push(item);
+  }
+
+  /** @param {object} extra { kind: 'card'|'reply'|'info', keyboard, silent, thread, photo: Buffer | () => Promise<Buffer|null> } */
   function enqueue(chat, text, extra = {}) {
-    const parts = splitText(text);
-    parts.forEach((t, i) => queue.push({ chat, text: t, attempts: 0, ...extra, ...(i < parts.length - 1 ? { keyboard: null } : {}) }));
+    const kind = extra.kind || 'info';
+    const parts = extra.photo ? [text] : splitText(text);
+    parts.forEach((t, i) => push({ chat, text: t, attempts: 0, createdAt: Date.now(), ...extra, kind, ...(i < parts.length - 1 ? { keyboard: null } : {}) }));
     pump();
+  }
+
+  async function sendItem(item, body) {
+    if (item.photo && !item.noPhoto) {
+      let png = null;
+      try { png = typeof item.photo === 'function' ? await item.photo() : item.photo; } catch (err) { logger.warn(`[TELEGRAM] grafik hazırlanamadı: ${err.message}`); }
+      if (png && visibleLen(body.text) <= CAPTION_MAX) {
+        const { text, link_preview_options: _lp, ...rest } = body;
+        return apiPhoto({ ...rest, caption: text }, png);
+      }
+      if (!png) stats.photoFallback++;
+    }
+    return api('sendMessage', body);
   }
 
   async function pump() {
@@ -67,12 +124,20 @@ function createTelegram({ apiBase = 'https://api.telegram.org', token, chatId, t
         const wait = lastSentAt + minIntervalMs - Date.now();
         if (wait > 0) await sleep(wait);
         const item = queue.shift();
+        const waited = Date.now() - item.createdAt;
+        if (waited > stats.maxWaitMs) stats.maxWaitMs = waited;
+        if (item.kind === 'card' && waited > cardTtlMs) {     // piyasa için bayat — gönderme
+          stats.droppedExpired++;
+          logger.warn(`[TELEGRAM] ${Math.round(waited / 60000)} dk bekleyen kart atlandı (bayat): ${item.text.slice(0, 40).replace(/\n/g, ' ')}`);
+          continue;
+        }
         try {
-          const body = { chat_id: item.chat, text: item.text, parse_mode: 'HTML', link_preview_options: { is_disabled: true } };
+          const late = item.kind === 'card' && waited > LATE_MS ? `⏳ <i>gecikmeli (${Math.round(waited / 60000)} dk kuyrukta bekledi)</i>\n` : '';
+          const body = { chat_id: item.chat, text: late + item.text, parse_mode: 'HTML', link_preview_options: { is_disabled: true } };
           if (item.thread) body.message_thread_id = Number(item.thread);
           if (item.keyboard) body.reply_markup = { inline_keyboard: item.keyboard };
           if (item.silent) body.disable_notification = true;
-          await api('sendMessage', body);
+          await sendItem(item, body);
           stats.sent++;
           lastSentAt = Date.now();
         } catch (err) {
@@ -84,6 +149,10 @@ function createTelegram({ apiBase = 'https://api.telegram.org', token, chatId, t
             queue.unshift(item);
             await sleep(sec * 1000);
             continue;
+          }
+          if (item.photo && !item.noPhoto && err.code >= 400 && err.code < 500 && err.code !== 429 && !/thread|topic/i.test(err.message)) {
+            logger.warn(`[TELEGRAM] grafikli gönderim reddedildi (${err.code}: ${err.message}) — grafiksiz tekrar`);
+            item.noPhoto = true; stats.photoFallback++; queue.unshift(item); continue;
           }
           if (item.thread && err.code === 400 && /thread|topic/i.test(err.message)) {
             logger.warn(`[TELEGRAM] Konu ${item.thread} bulunamadı (${err.message}) — mesaj genel akışa gönderiliyor`);
@@ -110,9 +179,13 @@ function createTelegram({ apiBase = 'https://api.telegram.org', token, chatId, t
     }
   }
 
-  /** Gruba (yapılandırılmış konuya) mesaj */
-  function send(text, { keyboard = null, silent = false, thread = threadId } = {}) {
-    enqueue(CHAT, text, { keyboard, silent, thread });
+  /** Gruba (yapılandırılmış konuya) mesaj. kind 'card' → TTL ve gecikme etiketi uygulanır */
+  function send(text, { keyboard = null, silent = false, thread = threadId, photo = null, kind = 'info' } = {}) {
+    enqueue(CHAT, text, { keyboard, silent, thread, photo, kind });
+  }
+
+  async function deleteMessage(chat, messageId) {
+    try { await api('deleteMessage', { chat_id: chat, message_id: messageId }); return true; } catch { return false; }
   }
 
   function flush(timeoutMs = 60_000) {
@@ -204,7 +277,7 @@ function createTelegram({ apiBase = 'https://api.telegram.org', token, chatId, t
     if (reply == null) return;
     const thread = msg.is_topic_message ? msg.message_thread_id : null;   // yanıt, komutun yazıldığı konuya
     const r = typeof reply === 'object' ? reply : { text: reply };
-    enqueue(msg.chat.id, r.text, { keyboard: r.keyboard || null, thread, silent: true });
+    enqueue(msg.chat.id, r.text, { kind: 'reply', keyboard: r.keyboard || null, thread, silent: true, photo: r.photo || null });
   }
 
   async function pollLoop() {
@@ -246,7 +319,7 @@ function createTelegram({ apiBase = 'https://api.telegram.org', token, chatId, t
   }
 
   return {
-    start, stop: () => { polling = false; }, send, flush, editMessage, isAdmin, publishCommands,
+    start, stop: () => { polling = false; }, send, flush, editMessage, deleteMessage, isAdmin, publishCommands,
     setCommands: t => { commands = { ...t }; }, onCallback: fn => { callbackHandler = fn; },
     queueLength: () => queue.length, stats,
     _internal: { handleUpdate, queue },
