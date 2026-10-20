@@ -32,7 +32,7 @@ function createApp({ cfg, binance, telegram, settings, logger = console, now = (
   const chartCache = new Map();             // "SYM|tf" → { at, candles }
   let tickers = new Map();                  // sym → { vol, chg }
   let funding = new Map();                  // sym → { rate, next, mark }
-  let lastListSlot = null, stopped = false, loading = 0, fallback = false, stream = null;
+  let lastListSlot = null, stopped = false, loading = 0, fallback = false, stream = null, volumeFilterSkipped = false;
   const timers = [];
   const stats = { startedAt: now(), lastPriceAt: 0, lastWsAt: 0, cards: 0, cardsDay: null, cardsToday: 0, gaps: 0, priceErrors: 0, wsUpdates: 0 };
 
@@ -70,7 +70,10 @@ function createApp({ cfg, binance, telegram, settings, logger = console, now = (
     try {
       const m = await binance.tickers24h();
       for (const [k, v] of m) tickers.set(k, v);
-    } catch (err) { logger.warn(`[24S] alınamadı: ${err.message}`); }
+    } catch (err) { logger.warn(`[24S] alınamadı: ${err.message}`); return; }
+    if (volumeFilterSkipped && !stopped) {           // hacim verisi geldi → atlanan süzgeci şimdi uygula
+      await refreshUniverse().catch(err => logger.error(`[EVREN] ${err.message}`));
+    }
   }
 
   async function refreshFunding() {
@@ -84,8 +87,9 @@ function createApp({ cfg, binance, telegram, settings, logger = console, now = (
     const info = await binance.exchangeInfo();
     let list = cryptoPerpetuals(info, cfg.excludeBases);
     const min = S().minHacimM * 1e6;
-    if (min > 0 && tickers.size) list = list.filter(sym => (tickers.get(sym)?.vol ?? 0) >= min);
-    else if (min > 0) logger.warn('[EVREN] 24s hacim verisi yok — hacim süzgeci bu turda uygulanmadı');
+    volumeFilterSkipped = min > 0 && !tickers.size;
+    if (volumeFilterSkipped) logger.warn('[EVREN] 24s hacim verisi yok — hacim süzgeci veri gelince uygulanacak');
+    else if (min > 0) list = list.filter(sym => (tickers.get(sym)?.vol ?? 0) >= min);
     const want = new Set(list);
     for (const x of failed) if (!want.has(x)) failed.delete(x);
     const removed = market.symbols().filter(x => !want.has(x));
@@ -357,7 +361,7 @@ function createApp({ cfg, binance, telegram, settings, logger = console, now = (
   }
 
   return {
-    start, stop, onData, onGap, restPrices, fallbackTick, listTick, resyncTick, refreshUniverse, retryFailed, lists, listText, coinReply, statusText, chartPng,
+    start, stop, onData, onGap, restPrices, fallbackTick, listTick, resyncTick, refreshUniverse, refreshTickers, retryFailed, lists, listText, coinReply, statusText, chartPng,
     market, engine, stats, blocked, funding, failed, _resync: resync, get stream() { return stream; },
   };
 }

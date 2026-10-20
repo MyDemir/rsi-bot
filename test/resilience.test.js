@@ -57,13 +57,19 @@ test('Açılışta yüklenemeyen coin yeniden denenir ve izlenmeye başlar', asy
   } finally { app.stop(); }
 });
 
-test('Hacim süzgeci açıkken 24s verisi alınamazsa evren boşalmaz', async () => {
+test('Hacim süzgeci açıkken 24s verisi alınamazsa evren boşalmaz; veri gelince süzgeç uygulanır', async () => {
   const settings = createSettings({ persist: false });
   settings.set('minHacimM', 10);
-  const app = makeApp(fakeBinance({ tickers: true }), settings);
+  const fail = { tickers: true };
+  const b = fakeBinance(fail);
+  const app = makeApp(b, settings);
   try {
     await app.start();
     assert.equal(app.market.symbols().length, SYMS.length);
+    fail.tickers = false;
+    b.tickers24h = async () => new Map(SYMS.map(s => [s, { vol: s === 'CCCUSDT' ? 1e6 : 5e8, chg: 1 }]));
+    await app.refreshTickers();
+    assert.deepEqual(app.market.symbols().sort(), ['AAAUSDT', 'BBBUSDT'], 'düşük hacimli coin çıkarıldı');
   } finally { app.stop(); }
 });
 
