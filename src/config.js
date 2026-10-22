@@ -41,6 +41,8 @@ module.exports = {
   tickersEveryMs:  5 * 60_000,  // 24s hacim / değişim
   universeEveryMs: 6 * H,       // yeni listelenen / kaldırılan kontratlar
   resyncDelayMs:   30_000,      // mum kapanışından sonra kesin kapanış için REST'ten yeniden yükle
+  resyncConcurrency: Number(process.env.RESYNC_CONCURRENCY) || 8,  // kesinleştirme paralelliği (en fazla 16; weight bütçesi değişmez)
+  loadConcurrency:   Number(process.env.LOAD_CONCURRENCY) || 4,    // açılış / yeni coin yükleme paralelliği (en fazla 8)
   maxWeightPerMin: 1800,        // Binance sınırı 2400 / dk — pay bırak
   telegramMinIntervalMs: 3100,  // grupta dakikada en fazla 20 mesaj
   telegramMaxQueue: 300,        // bellek koruması

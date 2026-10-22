@@ -13,6 +13,9 @@
  *   • Watchdog: staleMs boyunca mesaj yoksa bağlantı koparılıp yeniden kurulur ("bağlı ama veri yok")
  *   • Yeniden bağlanınca onGap(downSince) → uygulama REST ile boşluğu kapatır
  *   • Üstel geri çekilme 1 sn → 30 sn
+ *   • Gecikme: mesajın Binance'te üretildiği an (E) ile buraya ulaştığı an arasındaki fark ölçülür
+ *     (ağ + event loop kuyruğu). scalp-bot'taki "yerel gecikme" ölçümü — 1006 kopuşlarının ve geç
+ *     verinin sebebi Binance mı, makine mi, ayırmak için. takeWindow() pencereyi verip sıfırlar.
  */
 
 const WebSocket = require('ws');
@@ -35,6 +38,8 @@ function createStream({ onData, onGap = () => {}, options = {}, logger = console
   const opt = { ...DEFAULTS, ...options };
   const st = { ws: null, state: 'idle', lastMsgAt: 0, downSince: null, backoffMs: opt.minBackoffMs, timers: [] };
   const stats = { messages: 0, reconnects: 0, parseErrors: 0, connectedAt: 0 };
+  const newWin = () => ({ messages: 0, reconnects: 0, lagSum: 0, lagN: 0, lagMax: 0, from: Date.now() });
+  let win = newWin();
   let stopped = true, watchdog = null;
 
   function checkGap() {
@@ -53,7 +58,14 @@ function createStream({ onData, onGap = () => {}, options = {}, logger = console
     let msg;
     try { msg = JSON.parse(raw); } catch { stats.parseErrors++; return; }
     if (!msg?.stream || msg.data == null) return;
-    stats.messages++;
+    stats.messages++; win.messages++;
+    // Dizi akışlarında her öğe aynı E'yi taşır; ilki yeter
+    const e = Number((Array.isArray(msg.data) ? msg.data[0] : msg.data)?.E);
+    if (e > 0) {
+      const lag = Math.max(0, st.lastMsgAt - e);    // saat farkı eksiye düşürmesin
+      win.lagSum += lag; win.lagN++;
+      if (lag > win.lagMax) win.lagMax = lag;
+    }
     checkGap();
     try { onData(msg.stream, msg.data); } catch (e) { logger.error(`[WS] işleme hatası (${msg.stream}): ${e.message}`); }
   }
@@ -71,12 +83,13 @@ function createStream({ onData, onGap = () => {}, options = {}, logger = console
     ws.on('error', err => logger.error(`[WS] Hata: ${err.message}`));
     ws.on('close', code => {
       if (st.ws !== ws) return;                 // eski sokete ait gecikmiş olay
+      st.timers.forEach(clearTimeout); st.timers = [];
       st.state = 'closed';
       if (st.downSince == null) st.downSince = st.lastMsgAt || Date.now();
       if (stopped) return;
       const delay = st.backoffMs;
       st.backoffMs = Math.min(st.backoffMs * 2, opt.maxBackoffMs);
-      stats.reconnects++;
+      stats.reconnects++; win.reconnects++;
       logger.warn(`[WS] Bağlantı kapandı (kod ${code}) — ${Math.round(delay / 1000)} sn sonra yeniden bağlanılacak`);
       st.timers.push(setTimeout(connect, delay));
     });
@@ -108,6 +121,12 @@ function createStream({ onData, onGap = () => {}, options = {}, logger = console
     silenceMs: () => (st.lastMsgAt ? Date.now() - st.lastMsgAt : Infinity),
     isOpen: () => st.state === 'open',
     stats,
+    /** Nabız için son pencere (mesaj, yeniden bağlanma, gecikme ort/en fazla ms) — döndürür ve sıfırlar */
+    takeWindow() {
+      const w = win;
+      win = newWin();
+      return { messages: w.messages, reconnects: w.reconnects, lagAvgMs: w.lagN ? Math.round(w.lagSum / w.lagN) : null, lagMaxMs: w.lagN ? Math.round(w.lagMax) : null, windowMs: Date.now() - w.from };
+    },
   };
 }
 

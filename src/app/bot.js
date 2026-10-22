@@ -11,6 +11,8 @@
  *   kopukluk   yeniden bağlanınca fiyat + funding REST'ten tamamlanır; kopuklukta mumu kapanan coinler
  *              mumlar kesinleşene kadar sinyal vermez (scalp-bot "kurtarma kilidi" mantığı)
  *   yedek      WebSocket 20 sn sessizse fiyatlar 15 sn'de bir REST'ten
+ *   nabız      5 dk'da bir: WS mesaj / yeniden bağlanma / gecikme (Binance E → yerel), CPU-steal-event loop
+ *              (scalp-bot WS gecikmesi teşhisi) — gecikme ya da kopuş varsa sebep log'da yazar
  *   periyodik  liste (listeDk), 24s hacim (5 dk), REST karşılaştırması (5 dk), yeni/kaldırılan kontratlar (6 saat)
  */
 
@@ -20,6 +22,7 @@ const { cryptoPerpetuals } = require('../exchange/binance');
 const { createStream } = require('../exchange/stream');
 const chart = require('./chart');
 const fmt = require('./format');
+const { createLoadMonitor, loadText } = require('./load');
 
 const COND_KEYS = new Set(['ustAktif', 'ustEsik', 'altAktif', 'altEsik', 'tf4h', 'tf12h', 'tf1d', 'anlik', 'rsiPeriod']);
 
@@ -35,6 +38,12 @@ function createApp({ cfg, binance, telegram, settings, logger = console, now = (
   let lastListSlot = null, stopped = false, loading = 0, fallback = false, stream = null, volumeFilterSkipped = false;
   const timers = [];
   const stats = { startedAt: now(), lastPriceAt: 0, lastWsAt: 0, cards: 0, cardsDay: null, cardsToday: 0, lastCard: null, gaps: 0, priceErrors: 0, wsUpdates: 0 };
+  // REST paralelliği ağ gecikmesini örter (Frankfurt → Binance ≈ 0,35 sn/istek); weight bütçesini binance.js korur
+  const loadConcurrency = Math.max(1, Math.min(8, cfg.loadConcurrency ?? 4));
+  const resyncConcurrency = Math.max(1, Math.min(16, cfg.resyncConcurrency ?? 8));
+  let load = null, lastBeat = null;
+  const prevCum = {};
+  const delta = (key, v) => { const d = v - (prevCum[key] ?? 0); prevCum[key] = v; return d; };
 
   const S = () => settings.get();
   const keys = () => activeTfs(cfg.tfs, S());
@@ -63,7 +72,7 @@ function createApp({ cfg, binance, telegram, settings, logger = console, now = (
         } finally { loading--; }
       }
     };
-    await Promise.all(Array.from({ length: 4 }, worker));
+    await Promise.all(Array.from({ length: Math.min(loadConcurrency, list.length) }, worker));
   }
 
   async function refreshTickers() {
@@ -226,22 +235,55 @@ function createApp({ cfg, binance, telegram, settings, logger = console, now = (
     await restPrices({ gap: true });
   }
 
+  /**
+   * Kapanan mumları REST'ten kesinleştir. 4s/12s/1g kapanışında tüm coinler aynı anda sıraya girer
+   * (≈450 × dilim); sıralı çekim dakikalar sürüyordu → scalp-bot boşluk doldurması gibi sınırlı paralel.
+   */
   async function resyncTick() {
     const t = now();
-    const due = [...resync.entries()].filter(([, at]) => at <= t).slice(0, 40);
+    const due = [...resync.entries()].filter(([, at]) => at <= t).slice(0, resyncConcurrency * 10);
+    for (const [k] of due) resync.delete(k);
     const touched = new Set();
-    for (const [k] of due) {
-      resync.delete(k);
-      const [sym, tf] = k.split('|');
-      if (!market.has(sym)) continue;
-      try { market.load(sym, tf, await binance.klines(sym, tf, market.klineLimit()), now()); touched.add(sym); }
-      catch (err) { logger.warn(`[KESİNLEŞTİR] ${sym} ${tf}: ${err.message}`); resync.set(k, now() + 30_000); }
-    }
+    let i = 0;
+    const worker = async () => {
+      while (i < due.length && !stopped) {
+        const [k] = due[i++];
+        const [sym, tf] = k.split('|');
+        if (!market.has(sym)) continue;
+        try { market.load(sym, tf, await binance.klines(sym, tf, market.klineLimit()), now()); touched.add(sym); }
+        catch (err) { logger.warn(`[KESİNLEŞTİR] ${sym} ${tf}: ${err.message}`); resync.set(k, now() + 30_000); }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(resyncConcurrency, due.length) }, worker));
+    for (const [k] of due.slice(i)) resync.set(k, now());     // durdurulduysa kalanlar kaybolmasın
     for (const sym of touched) {
       if (!blocked.has(sym) || [...resync.keys()].some(k => k.startsWith(`${sym}|`))) continue;
       blocked.delete(sym);                    // tüm mumları kesin → kilit kalkar, şart hemen değerlendirilir
       if (market.ready(sym)) evaluate(sym);
     }
+  }
+
+  // ── Nabız ────────────────────────────────────────────────────────────────
+  /** fly logs'a durum satırı; sayaçlar son pencerenin farkı (kümülatif değil). Gecikme/kopuş varsa sebebi yazılır. */
+  function heartbeat() {
+    const mins = Math.round(cfg.heartbeatMs / 60_000);
+    const w = stream?.takeWindow?.() ?? null;
+    const l = load?.take() ?? null;
+    const updates = delta('wsUpdates', stats.wsUpdates), cards = delta('cards', stats.cards), gaps = delta('gaps', stats.gaps);
+    lastBeat = { at: now(), ws: w, load: l };
+    const sec = ms => (ms / 1000).toFixed(1);
+    const wsTxt = !w ? 'WS -' : `WS ${stream.isOpen() ? 'bağlı' : 'KOPUK'} · ${w.messages} mesaj${w.lagAvgMs != null ? ` · gecikme ort ${sec(w.lagAvgMs)} / en fazla ${sec(w.lagMaxMs)} sn` : ''}${w.reconnects ? ` · ${w.reconnects} yeniden bağlanma` : ''}`;
+    logger.log(`[NABIZ] ${readyCount()}/${market.symbols().length} hazır${blocked.size ? ` · ${blocked.size} kesinleşiyor` : ''}${resync.size ? ` · ${resync.size} mum sırada` : ''} · ${fallback ? 'REST yedeği · ' : ''}${wsTxt}`
+      + ` | son ${mins} dk: ${updates} fiyat güncellemesi · ${cards} kart${gaps ? ` · ${gaps} kopukluk` : ''}`
+      + `${l ? ` | ${loadText(l)}` : ''} | Binance ağırlık ${binance.stats.usedWeight}/2400 · tg kuyruk ${telegram.queueLength()} · ${Math.round(process.memoryUsage().rss / 1048576)} MB`);
+    if (w?.lagMaxMs > 20_000) {
+      const why = l?.stealPct >= 10 ? `CPU kotası dolmuş görünüyor (steal %${l.stealPct.toFixed(0)})`
+        : l?.loopMaxMs > 5_000 ? `event loop ${sec(l.loopMaxMs)} sn tıkandı`
+          : 'ağ ya da Binance tarafı (süreç yükü normal)';
+      logger.warn(`[UYARI] WS gecikmesi ${Math.round(w.lagMaxMs / 1000)} sn'ye çıktı — ${why}`);
+    }
+    if (w?.reconnects > 0) logger.warn(`[UYARI] Son ${mins} dakikada ${w.reconnects} WebSocket yeniden bağlanması${l?.loopMaxMs > 5_000 ? ` — event loop ${sec(l.loopMaxMs)} sn tıkandı (pong gecikmesi → 1006 olabilir)` : ''}`);
+    return lastBeat;
   }
 
   // ── Liste / durum ────────────────────────────────────────────────────────
@@ -318,6 +360,8 @@ function createApp({ cfg, binance, telegram, settings, logger = console, now = (
         'Veri': fallback ? 'REST yedeği (WebSocket sessiz)' : stats.lastWsAt ? 'WebSocket' : 'bağlanıyor',
         'Son fiyat': silentSec == null ? '—' : `${silentSec} sn önce`,
         'Kopukluk': String(stats.gaps),
+        ...(lastBeat?.ws?.lagAvgMs != null ? { 'WS gecikme': `ort ${(lastBeat.ws.lagAvgMs / 1000).toFixed(1)} sn · en fazla ${(lastBeat.ws.lagMaxMs / 1000).toFixed(1)} sn` } : {}),
+        ...(lastBeat?.load ? { 'Süreç yükü': loadText(lastBeat.load) } : {}),
         'Bugünkü kart': String(stats.cardsDay === new Date(t).toISOString().slice(0, 10) ? stats.cardsToday : 0),
         'Şart': `RSI ≥ ${s.ustEsik} / ≤ ${s.altEsik} · ${keys().map(k => cfg.tfs.find(x => x.key === k).label).join(' ')}`,
         'Telegram kuyruğu': String(telegram.queueLength()),
@@ -378,7 +422,8 @@ function createApp({ cfg, binance, telegram, settings, logger = console, now = (
     every(cfg.tickersEveryMs, refreshTickers, '24S');
     every(cfg.reconcileEveryMs, async () => { if (!fallback) await restPrices(); await refreshFunding(); }, 'KARŞILAŞTIR');
     every(cfg.universeEveryMs, async () => { await refreshUniverse(); }, 'EVREN');
-    every(cfg.heartbeatMs, () => logger.log(`[NABIZ] ${readyCount()}/${market.symbols().length} hazır · ${fallback ? 'REST yedeği' : `WS ${stats.lastWsAt ? Math.round((now() - stats.lastWsAt) / 1000) : '-'} sn`} · ${stats.wsUpdates} güncelleme · ${stats.cards} kart · tg kuyruk ${telegram.queueLength()} · ${Math.round(process.memoryUsage().rss / 1048576)} MB`), 'NABIZ');
+    load = createLoadMonitor();
+    every(cfg.heartbeatMs, heartbeat, 'NABIZ');
     listTick();
     telegram.send(`🟢 <b>RSI botu hazır</b> — ${readyCount()} kripto vadeli kontrat izleniyor\n\n${fmt.listSections(lists(), ctx())}\n\n<i>Listedekiler için ayrıca kart gelmez; şarta yeni girenler için gelir. Ayarlar: /ayarlar</i>`, { silent: true });
   }
@@ -386,12 +431,13 @@ function createApp({ cfg, binance, telegram, settings, logger = console, now = (
   function stop() {
     stopped = true;
     stream?.stop();
+    load?.stop();
     for (const h of timers) clearInterval(h);
     clearTimeout(changeTimer);
   }
 
   return {
-    start, stop, onData, onGap, restPrices, fallbackTick, listTick, resyncTick, refreshUniverse, refreshTickers, retryFailed, healthReport, lists, listText, coinReply, statusText, chartPng,
+    start, stop, onData, onGap, restPrices, fallbackTick, listTick, resyncTick, heartbeat, refreshUniverse, refreshTickers, retryFailed, healthReport, lists, listText, coinReply, statusText, chartPng,
     market, engine, stats, blocked, funding, failed, _resync: resync, get stream() { return stream; },
   };
 }

@@ -57,7 +57,7 @@ flowchart LR
 |---|---|---|
 | Anlık fiyat | `!miniTicker@arr` — saniyede **bir** mesajda tüm değişen coinler | 450 coinde mesaj başı ≈ 1,2 ms → CPU ≈ %0,1 |
 | Funding | `!markPrice@arr@1s` — oran (`r`) ve sonraki funding zamanı (`T`) | aynı bağlantı |
-| Mumlar | Açılışta coin başına 3 × 99 mum (weight 1); mum kapanınca 30 sn sonra o mum REST'ten kesinleşir | açılış ≈ 45 sn |
+| Mumlar | Açılışta coin başına 3 × 99 mum (weight 1); mum kapanınca 30 sn sonra o mum REST'ten kesinleşir (8 paralel) | açılış ≈ 45 sn · 4s kapanışı ≈ 20 sn |
 | Grafik | Yalnız kart giderken o coin + dilim için 1 istek (60 sn önbellek); **gönderim anında** çizilir | kuyrukta PNG birikmez |
 
 Kline stream'leri (coin başına saniyede ~4 mesaj → 450 × 3 dilim ≈ 5000 mesaj/sn) bilerek kullanılmaz:
@@ -69,6 +69,10 @@ RSI için açık mumun son fiyatı yeterli, kesin kapanış REST'ten alınır.
   mumları REST'ten kesinleşene kadar **sinyal vermez** (kilit), sonra hemen değerlendirilir.
 - **Yedek:** WebSocket 20 sn sessizse fiyatlar 15 sn'de bir REST'ten; mesaj gelince yedek kapanır.
 - **Karşılaştırma:** WebSocket açıkken de 5 dk'da bir REST fiyat + funding — kaçan güncelleme kalmaz.
+- **Gecikme teşhisi:** her mesajın Binance'te üretildiği an (`E`) ile ulaştığı an arasındaki fark ölçülür; 5 dk'lık
+  `[NABIZ]` satırında WS gecikmesi (ort / en fazla), yeniden bağlanma, CPU %, steal % ve event loop p99 yazar.
+  Gecikme 20 sn'yi geçerse ya da bağlantı yeniden kurulursa `[UYARI]` sebebiyle birlikte düşer (CPU kotası dolmuş /
+  event loop tıkandı → pong gecikir, 1006 kopuşu / ağ ya da Binance). Sayaçlar pencere farkıdır, kümülatif değil.
 - **Telegram:** grup sınırı (20 msj/dk) ve 429 beklemesi; komut yanıtları kartların önüne geçer; 2 dk'dan uzun
   bekleyen karta "gecikmeli" etiketi; 20 dk'dan uzun bekleyen kart gönderilmez (bayat); kuyruk sınırı (bellek).
 
@@ -135,6 +139,7 @@ Güncelleme: `git pull && fly deploy`. Ayarlar diskte (`/data/settings.json`) ol
 | `TELEGRAM_ADMIN_IDS` | isteğe bağlı | ayar değiştirebilecek kullanıcı ID'leri (virgüllü); boşsa grubun yöneticileri |
 | `BINANCE_API_KEY` | isteğe bağlı | gerekmez (herkese açık veri); tanımlıysa REST isteklerinde gönderilir |
 | `BINANCE_WS_URL` | isteğe bağlı | WebSocket adresi (varsayılan `wss://fstream.binance.com/market/stream`) |
+| `RESYNC_CONCURRENCY` · `LOAD_CONCURRENCY` | isteğe bağlı | mum kesinleştirme (varsayılan 8, en fazla 16) ve yükleme (4, en fazla 8) paralelliği; weight bütçesi değişmez |
 | `DATA_DIR` | isteğe bağlı | ayar dosyası klasörü (Fly'da `/data`) |
 | `DISPLAY_TZ` | isteğe bağlı | saat dilimi (varsayılan `Europe/Istanbul`) |
 | `HUB_URL` · `HUB_KEY` | isteğe bağlı | izleme paneline nabız (aşağıda); ikisi de tanımlı değilse hiçbir şey gönderilmez |
